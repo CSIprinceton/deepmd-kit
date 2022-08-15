@@ -29,8 +29,11 @@ class EnerStdLoss (Loss) :
                   limit_pref_ae : float = 0.0,
                   start_pref_pf : float = 0.0,
                   limit_pref_pf : float = 0.0,
+                  start_pref_obs : float = 0.0,
+                  limit_pref_obs : float = 0.0,
                   relative_f : float = None,
                   enable_atom_ener_coeff: bool=False,
+                  use_observables: bool=False,
     ) -> None:
         self.starter_learning_rate = starter_learning_rate
         self.start_pref_e = start_pref_e
@@ -43,8 +46,11 @@ class EnerStdLoss (Loss) :
         self.limit_pref_ae = limit_pref_ae
         self.start_pref_pf = start_pref_pf
         self.limit_pref_pf = limit_pref_pf
+        self.start_pref_obs = start_pref_obs
+        self.limit_pref_obs = limit_pref_obs
         self.relative_f = relative_f
         self.enable_atom_ener_coeff = enable_atom_ener_coeff
+        self.use_observables = use_observables
         self.has_e = (self.start_pref_e != 0.0 or self.limit_pref_e != 0.0)
         self.has_f = (self.start_pref_f != 0.0 or self.limit_pref_f != 0.0)
         self.has_v = (self.start_pref_v != 0.0 or self.limit_pref_v != 0.0)
@@ -58,6 +64,10 @@ class EnerStdLoss (Loss) :
         add_data_requirement('atom_pref', 1, atomic=True, must=False, high_prec=False, repeat=3)
         if self.enable_atom_ener_coeff:
             add_data_requirement('atom_ener_coeff', 1, atomic=True, must=False, high_prec=False, default=1.)
+        if self.use_obervables:
+            add_data_requirement('energy_ref', 1, atomic=False, must=False, high_prec=True)
+            add_data_requirement('observable', 1, atomic=False, must=False, high_prec=True)
+            self.has_obs = (self.start_pref_obs != 0.0 or self.limit_pref_obs != 0.0)
 
     def build (self, 
                learning_rate,
@@ -79,6 +89,10 @@ class EnerStdLoss (Loss) :
         find_virial = label_dict['find_virial']
         find_atom_ener = label_dict['find_atom_ener']                
         find_atom_pref = label_dict['find_atom_pref']                
+
+        if self.use_obervables:
+            observable_hat = label_dict['observable']
+            energy_ref = label_dict['energy_ref']
 
         if self.enable_atom_ener_coeff:
             # when ener_coeff (\nu) is defined, the energy is defined as 
@@ -115,6 +129,12 @@ class EnerStdLoss (Loss) :
         atom_ener_hat_reshape = tf.reshape (atom_ener_hat, [-1])
         l2_atom_ener_loss = tf.reduce_mean (tf.square(atom_ener_hat_reshape - atom_ener_reshape), name = "l2_atom_ener_" + suffix)
 
+        if self.use_obervables:
+            x=tf.reduce_sum(tf.multiply(observables,tf.exp(beta*(energy_raw-energy_data))))
+            y=tf.reduce_sum(tf.exp(beta*(energy_raw-energy_data)))
+            avg_observable=tf.divide(x,y)
+            l2_obs_loss = tf.reduce_mean( tf.square(avg_observable - observable_hat), name='l2_obs_'+suffix)
+
         atom_norm  = 1./ global_cvt_2_tf_float(natoms[0]) 
         atom_norm_ener  = 1./ global_cvt_2_ener_float(natoms[0]) 
         pref_e = global_cvt_2_ener_float(find_energy * (self.limit_pref_e + (self.start_pref_e - self.limit_pref_e) * learning_rate / self.starter_learning_rate) )
@@ -122,6 +142,7 @@ class EnerStdLoss (Loss) :
         pref_v = global_cvt_2_tf_float(find_virial * (self.limit_pref_v + (self.start_pref_v - self.limit_pref_v) * learning_rate / self.starter_learning_rate) )
         pref_ae= global_cvt_2_tf_float(find_atom_ener * (self.limit_pref_ae+ (self.start_pref_ae-self.limit_pref_ae) * learning_rate / self.starter_learning_rate) )
         pref_pf= global_cvt_2_tf_float(find_atom_pref * (self.limit_pref_pf+ (self.start_pref_pf-self.limit_pref_pf) * learning_rate / self.starter_learning_rate) )
+        pref_obs= global_cvt_2_ener_float(find_observable * (self.limit_pref_obs+ (self.start_pref_obs-self.limit_pref_obs) * learning_rate / self.starter_learning_rate) )
 
         l2_loss = 0
         more_loss = {}
@@ -140,6 +161,10 @@ class EnerStdLoss (Loss) :
         if self.has_pf :
             l2_loss += global_cvt_2_ener_float(pref_pf * l2_pref_force_loss)
         more_loss['l2_pref_force_loss'] = l2_pref_force_loss
+        if self.use_obervables:
+            if self.has_obs :
+                l2_loss += global_cvt_2_ener_float(pref_obs * l2_obs_loss)
+            more_loss['l2_obs_loss'] = l2_obs_loss
 
         # only used when tensorboard was set as true
         self.l2_loss_summary = tf.summary.scalar('l2_loss', tf.sqrt(l2_loss))
